@@ -1,0 +1,629 @@
+#include "patch.h"
+#include "ptrace_util.h"
+#include "remote_allocator.h"
+
+namespace {
+#include "../dynasm/dasm_proto.h"
+#include "../dynasm/dasm_x86.h"
+} // namespace
+
+#include "../instr/insn.h"
+#include <udis86.h>
+
+#include <string.h>
+#include <cstddef>
+#include <inttypes.h>
+#include <limits>
+#include <cassert>
+#include <memory>
+#include <boost/scoped_array.hpp>
+
+#include <glog/logging.h>
+
+|.arch x64
+|.actionlist actions
+
+namespace dynhook {
+
+|.globals TRAMPOLINE_GLOBLES
+static void* TRAMPOLINE_GLOBLES[TRAMPOLINE_GLOBLES_MAX];
+
+bool patch::get_trampoline_code( uintptr_t back ) {
+
+  const int32_t high =
+    static_cast<int32_t>((back &0xffffffff00000000U) >> 32);
+
+  const int32_t low =
+    static_cast<int32_t>((back &0x00000000ffffffffU));
+
+  dasm_State* state;
+  dasm_init(&state,1);
+  dasm_setupglobal(&state,TRAMPOLINE_GLOBLES,TRAMPOLINE_GLOBLES_MAX);
+  dasm_setup(&state,actions);
+
+#define Dst (&state)
+
+  |->start:
+  | push low
+  | mov dword [rsp+4],high
+  | ret
+
+#undef Dst // Dst
+
+  int status = dasm_link(&state,&m_trampoline_code_size);
+  if(status != DASM_S_OK) {
+    LOG(ERROR)<<"Cannot link generated code!";
+    goto fail;
+  }
+
+  m_trampoline_code.reset( new char[m_trampoline_code_size] );
+  dasm_encode(&state,m_trampoline_code.get());
+  dasm_free(&state);
+  return true;
+
+fail:
+  dasm_free(&state);
+  return false;
+}
+
+bool patch::get_function_body() {
+  const size_t word_size = base::alignment(
+      m_target.size,kWordSize)/kWordSize;
+  assert(word_size >0);
+  m_func_code.reset(new char[word_size*kWordSize]);
+  for( size_t i = 0 ; i < word_size ; ++i ) {
+    uintptr_t buf;
+    if(!ptrace_peek(m_pinfo.pid(),m_target.base+i*kWordSize,
+          &buf)) {
+      return false;
+    }
+    memcpy(m_func_code.get()+i*kWordSize,&buf,kWordSize);
+  }
+  return true;
+}
+
+// Check if we can do a local patch.
+// This function simply decodes all the instructions inside of the function
+// body and check whether we have any direct jmp that jmps back to the place
+// we do a patch.
+bool patch::can_patch( size_t patch_size ) {
+  size_t length = m_target.size;
+  size_t pos = 0;
+  const char* codes = reinterpret_cast<const char*>(m_func_code.get());
+  while( pos <= length ) {
+    struct insn insn;
+    insn_init(&insn,codes+pos,MAX_INSN_SIZE,1);
+    insn_get_length(&insn);
+    insn.kaddr = reinterpret_cast<
+      const insn_byte_t*>(codes + pos);
+
+    insn.next_byte = reinterpret_cast<const insn_byte_t*>(
+        codes+pos+insn.length);
+
+    if(insn_is_indirect_jmp(insn) ||
+       insn_jump_into_range(insn,m_target.base,m_target.base+patch_size)) {
+      LOG(ERROR)<<"Cannot patch the function:"<<m_target.name<<" because the "
+        "function body has jump which jump back to the hook instructions!"
+        "Sorry, your compiler is a bastard!";
+      return false;
+    }
+    pos += insn.length;
+  }
+  return true;
+}
+
+int patch::copy_instruction( const void* src, void* dest,
+    uintptr_t src_addr, uintptr_t dest_addr ) {
+  struct insn insn;
+  int len;
+  insn_init(&insn,src,MAX_INSN_SIZE,1);
+  insn_get_length(&insn);
+  len = insn.length;
+
+  memcpy(dest,insn.kaddr,static_cast<size_t>(len));
+
+  if(insn_rip_relative(&insn)) {
+    int64_t newdisp;
+    void* disp;
+
+    insn_init(&insn,dest,len,1);
+    insn_get_displacement(&insn);
+
+    newdisp = static_cast<int64_t>(
+        src_addr + insn.displacement.value - dest_addr);
+
+    if( newdisp > std::numeric_limits<int32_t>::max()  ||
+        newdisp < std::numeric_limits<int32_t>::min() ) {
+      // TODO:: Rewrite it into absolute address mode ?
+      LOG(ERROR)<<"Cannot rewrite RIP related instruction since the "
+        "new displacement is not able to fit into the 32 bits signed "
+        "integer!";
+      return -1;
+    }
+    disp = static_cast<char*>(dest) + insn_offset_displacement(&insn);
+    *reinterpret_cast<int32_t*>(disp) = static_cast<int32_t>(newdisp);
+  }
+
+  if(insn_is_indirect_jmp(insn) || insn_is_jmp_instruction(insn)) {
+    LOG(ERROR)<<"Looks like your code is not compiled with -fPIC "
+      "or it contains some jump instruction that I cannot rewrite it "
+      "currently at the head of the function body. For safety, we just "
+      "don't install the hook now !";
+    LOG(ERROR)<<"Immidiet number:"<<insn.immediate.value<<std::endl;
+    return -1;
+  }
+  return len;
+}
+
+int patch::copy_detour( void* buffer , size_t hook_size , uintptr_t start ) {
+  assert(hook_size <= m_target.size);
+  size_t offset = 0;
+  char* buf = static_cast<char*>(buffer);
+  do {
+    int length = copy_instruction(m_func_code.get()+offset,buf+offset,
+        m_target.base+ offset,
+        start + offset );
+    if(length<0) return -1;
+    offset += length;
+    // Check if we consume enough
+    if(offset >= hook_size) break;
+  } while(true);
+  assert(offset <= m_target.size);
+  return offset;
+}
+
+bool patch::check() {
+  assert(m_checked == false);
+  if(!get_function_body()) return false;
+  m_checked = true;
+  return can_patch(max_hook_size());
+}
+
+bool patch::perform( uintptr_t* patched_entry ) {
+  assert(m_checked);
+  // 1. Get hook code
+  if(!get_hook_code()) return false;
+
+  // 2. Rewrite the detour code
+  int detour_len = copy_detour(
+      m_detour_buffer.get()+m_detour_buffer_size,
+      hook_code_size(),
+      m_detour_buffer_addr);
+  if(detour_len<0) return false;
+
+  // 3. Get trampoline code
+  if(!get_trampoline_code(m_target.base+detour_len))
+    return false;
+
+  // 4. Append the trampoline code into the detour buffer
+  memcpy(m_detour_buffer.get()+m_detour_buffer_size + detour_len,
+      m_trampoline_code.get(),m_trampoline_code_size);
+
+  size_t patched_start = m_detour_buffer_size;
+
+  m_detour_buffer_size += detour_len + m_trampoline_code_size;
+
+  // 5. Flush those memory into the remote process ....
+  if(!write_hook()) return false;
+
+  if(!write_ool(m_detour_buffer_addr,m_detour_buffer.get(),
+        m_detour_buffer_size))
+    return false;
+
+  // 6. Done
+  *patched_entry = m_detour_buffer_addr + patched_start;
+  m_patched_entry = m_detour_buffer_addr+ patched_start;
+  return true;
+}
+
+bool patch::write_hook() {
+  assert(hook_code_size() <= m_target.size);
+  m_body_modified = true;
+  return write_remote(m_target.base,hook_code(),hook_code_size());
+}
+
+bool patch::write_remote( uintptr_t addr , const char* buf , size_t len ) {
+  const size_t loops = len / kWordSize;
+  const size_t trailers = len - loops * kWordSize;
+
+  for( size_t i = 0 ; i < loops ; ++i ) {
+    uintptr_t b = *reinterpret_cast<const uintptr_t*>(buf+i*kWordSize);
+    if(!ptrace_poke(m_pinfo.pid(),addr+i*kWordSize,b))
+      return false;
+  }
+
+  if(trailers) {
+    uintptr_t b;
+    if(!ptrace_peek(m_pinfo.pid(),addr+loops*kWordSize,&b))
+      return false;
+    base::int64_array arr(static_cast<int64_t>(b));
+    assert(trailers < kWordSize);
+    for( size_t i = 0 ; i < trailers ; ++i ) {
+      arr[i] = buf[loops*kWordSize+i];
+    }
+    if(!ptrace_poke(m_pinfo.pid(),addr+loops*kWordSize,
+          arr.to_int64()))
+      return false;
+  }
+
+  return true;
+}
+
+bool patch::write_ool( uintptr_t where , const void* src , size_t len ) {
+  const size_t loops = len / kWordSize;
+  const size_t trailer = len - loops* kWordSize;
+  const char* buf = static_cast<const char*>(src);
+
+  for( size_t i = 0 ; i < loops ; ++i ) {
+    uintptr_t b = *reinterpret_cast<const uintptr_t*>(buf
+        +i*kWordSize);
+    if(!ptrace_poke(m_pinfo.pid(),where+i*kWordSize,b))
+      return false;
+  }
+
+  if(trailer) {
+    uintptr_t b = 0;
+    base::int64_array arr(static_cast<int64_t>(b));
+    for( size_t i = 0 ; i < trailer ; ++i ) {
+      arr[i] = buf[loops*kWordSize+i];
+    }
+    if(!ptrace_poke(m_pinfo.pid(),where+loops*kWordSize,arr.to_int64()))
+      return false;
+  }
+
+  return true;
+}
+
+patch::~patch() {
+  if(m_body_modified) {
+    // Recovery the function body as much as possible
+    if(!write_remote(m_target.base,m_func_code.get(),m_target.size)) {
+      LOG(ERROR)<<"Try to recovery the old function:"<<m_target.name<<
+       " body but failed!";
+      return;
+    }
+  }
+}
+
+void patch::dump( std::ostream& output ) {
+  output<<"===========================\n";
+  output<<"HookedFunction:"<<m_target.name<<"\n";
+  output<<"===========================\n";
+  output<<"NewFunction:"<<std::hex<<m_new_func<<std::dec<<"\n";
+  output<<"===========================\n";
+  output<<"DetourBuffer("<<m_detour_buffer_size<<"):"
+    <<std::hex<<m_detour_buffer_addr<<std::dec<<"\n";
+  base::dump_assembly(m_detour_buffer.get(),m_detour_buffer_size,
+      output);
+  output<<"===========================\n";
+  output<<"PatchedFunction:"<<std::hex<<m_patched_entry<<std::dec<<"\n";
+  output<<"===========================\n";
+  output<<"OldFunction:\n";
+  base::dump_assembly(m_func_code.get(),m_target.size,output);
+  output<<"===========================\n";
+}
+
+namespace {
+
+// This patch is currently the only working patch. We may have a remote
+// patch method as fall back for other situation in the future, but now
+// we only support inline hook patch. The inline hook patch is crafted
+// as follow, it will install a hook code in the remote process as jump.
+// We will *always* try to install a relative jump at first since it costs
+// 5 bytes; if we cannot use relative jump then we will try to use double
+// jump; if double jump doesn't work we will install a absolute jump which
+// costs 14 bytes. So if a function is less than 14 bytes long but requires
+// a absolute jump , it means we cannot hook it , error will be reported to
+// users.
+class inline_hook_patch : public patch {
+ public:
+   static const size_t kHookMaximumSize = 14;
+   static const size_t kRelativeJumpSize = 5;
+   static const size_t kHookableSize = kRelativeJumpSize;
+   // Compose the hook code. Hook code will be installed right in the
+   // function's head. The original code of the old function will be
+   // rewritten into the detour buffer which follows a trampoline code
+   // directly jumps back to where the code needs to execute.
+   virtual bool get_hook_code();
+
+   // 3 Different types of get_hook_code
+   bool get_abs_jump();
+   bool get_rel_jump();
+   bool get_dou_jump();
+
+   virtual const char* hook_code() const {
+     return m_hook_code.get();
+   }
+
+   virtual size_t hook_code_size() const {
+     return m_hook_code_size;
+   }
+
+   virtual size_t max_hook_size() const {
+     return kHookMaximumSize;
+   }
+
+   virtual void dump( std::ostream& );
+
+   virtual bool precheck_hook();
+
+   enum {
+     NOT_SPECIFIED,
+     RELATIVE_JUMP,
+     DOUBLE_JUMP,
+     ABSOLUTE_JMP
+   };
+
+   inline_hook_patch( const process_info& pinfo ,
+       const process_info::symbol_info& target ,
+       uintptr_t new_func_addr ,
+       remote_allocator* alloc ):
+     patch(pinfo,target,new_func_addr,alloc),
+     m_hook_code(),
+     m_hook_code_size(0),
+     m_hook_type( NOT_SPECIFIED )
+  {}
+
+ private:
+   void* get_rel_jump( uintptr_t from , uintptr_t to , size_t* len );
+   void* get_abs_jump( uintptr_t target , size_t* len );
+
+ private:
+   boost::scoped_array<char> m_hook_code;
+   size_t m_hook_code_size;
+   int m_hook_type;
+};
+
+void inline_hook_patch::dump( std::ostream& output ) {
+  patch::dump(output);
+  output<<"==========================\n";
+  output<<"HookedCode("<<m_hook_code_size<<"):\n";
+  base::dump_assembly(m_hook_code.get(),m_hook_code_size,output);
+  output<<"==========================\n";
+}
+
+|.globals ABS_JUMP_GLOBALS
+static void* ABS_JUMP_GLOBALS[ABS_JUMP_GLOBALS_MAX];
+
+void* inline_hook_patch::get_abs_jump( uintptr_t ptr , size_t* len ) {
+  const int32_t high =
+    static_cast<int32_t>(( ptr &0xffffffff00000000U) >> 32);
+
+  const int32_t low =
+    static_cast<int32_t>(( ptr &0x00000000ffffffffU));
+
+  dasm_State* state;
+  dasm_init(&state,1);
+  dasm_setupglobal(&state,ABS_JUMP_GLOBALS,ABS_JUMP_GLOBALS_MAX);
+  dasm_setup(&state,actions);
+
+#define Dst (&state)
+
+  |->start:
+  | push low
+  | mov dword [rsp+4],high
+  | ret
+
+#undef Dst
+
+  int status = dasm_link(&state,len);
+  if(status != DASM_S_OK) {
+    LOG(ERROR)<<"Cannot link generated code!";
+    dasm_free(&state);
+    return NULL;
+  }
+
+  char* buffer = new char [*len];
+  dasm_encode(&state,buffer);
+  dasm_free(&state);
+  return buffer;
+}
+
+|.globals REL_JUMP_GLOBALS
+static void* REL_JUMP_GLOBALS[REL_JUMP_GLOBALS_MAX];
+
+void* inline_hook_patch::get_rel_jump( uintptr_t from , uintptr_t to ,
+    size_t* len ) {
+  dasm_State* state;
+  dasm_init(&state,1);
+  dasm_setupglobal(&state,REL_JUMP_GLOBALS,REL_JUMP_GLOBALS_MAX);
+  dasm_setup(&state,actions);
+
+#define Dst (&state)
+
+  intptr_t offset = static_cast<intptr_t>(to - (from + kRelativeJumpSize));
+
+  assert(offset <= std::numeric_limits<int32_t>::max() &&
+         offset >= std::numeric_limits<int32_t>::min());
+
+  int32_t offset_32 = static_cast<int32_t>(offset);
+
+  // jmp rel32 's opcode
+  // dynasm doesn't support this type of jump instruction
+  const unsigned char jmp = 0xe9;
+
+  |->start:
+  |.byte jmp
+  |.dword offset_32
+
+#undef Dst
+
+  int status = dasm_link(&state,len);
+  if(status != DASM_S_OK) {
+    LOG(ERROR)<<"Cannot link generated code!";
+    dasm_free(&state);
+    return NULL;
+  }
+
+  char* buffer = new char[*len];
+  dasm_encode(&state,buffer);
+  dasm_free(&state);
+  return buffer;
+}
+
+bool inline_hook_patch::get_abs_jump() {
+  // Install a ABS jump hook in the target buffer
+  void* buffer = get_abs_jump(
+      m_new_func,
+      &m_hook_code_size);
+  if(buffer) {
+    m_hook_code.reset( static_cast<char*>(buffer) );
+    return true;
+  } else {
+    return false;
+  }
+}
+
+bool inline_hook_patch::get_rel_jump() {
+  void* buffer = get_rel_jump(
+      m_target.base, // From here
+      m_new_func, // To new function
+      &m_hook_code_size);
+  if(buffer) {
+    m_hook_code.reset(static_cast<char*>(buffer));
+    return true;
+  } else {
+    return false;
+  }
+}
+
+bool inline_hook_patch::get_dou_jump() {
+  // 1. Get the code for hook code
+  void* buffer = get_rel_jump(
+      m_target.base , // From here
+      m_detour_buffer_addr, // To detour buffer
+      &m_hook_code_size);
+  if(buffer) {
+    // 2. Try to install another absolute jump inside of the
+    // detour buffer
+    size_t second_jump_size;
+    boost::scoped_array<char> second_jump(static_cast<char*>(
+          get_abs_jump(m_new_func,&second_jump_size)));
+    if(second_jump) {
+      // 3. Copy the detour buffer into the OOL buffer
+      assert(m_detour_buffer.get());
+      assert(m_detour_buffer_size == 0);
+      memcpy(m_detour_buffer.get(),second_jump.get(),second_jump_size);
+      m_detour_buffer_size = second_jump_size;
+      m_hook_code.reset( static_cast<char*>(buffer) );
+      return true;
+    }
+  }
+  return false;
+}
+
+bool inline_hook_patch::get_hook_code() {
+  switch(m_hook_type) {
+    case ABSOLUTE_JMP: return get_abs_jump();
+    case RELATIVE_JUMP:return get_rel_jump();
+    case DOUBLE_JUMP:  return get_dou_jump();
+    default: assert(0); return false;
+  }
+}
+
+bool inline_hook_patch::precheck_hook() {
+  // 1. Now do a check to see whether what kind of hook
+  // we can specify for this patch
+  intptr_t diff = m_new_func - (m_target.base+kRelativeJumpSize);
+
+  // 2. Assign OOL buffer size
+  size_t detour_len = m_target.size + kTrampolineMaximumCodeSize;
+  size_t remote_len = 0;
+
+  if(diff > std::numeric_limits<int32_t>::max() ||
+     diff < std::numeric_limits<int32_t>::min() ) {
+    // No , we cannot do relative jump but have to
+    // use absolute jump. We prefer double jump here.
+    // Check whether we could do a double jump here or not.
+    intptr_t detour_diff = static_cast<int32_t>(
+        m_detour_buffer_addr - (m_target.base+kRelativeJumpSize) );
+
+    if(detour_diff > std::numeric_limits<int32_t>::max() ||
+       detour_diff < std::numeric_limits<int32_t>::min()) {
+      // Only absolute jump will work here
+      if(m_target.size >= kHookMaximumSize) {
+        detour_len = m_target.size + kTrampolineMaximumCodeSize;
+        remote_len = kHookMaximumSize +
+          kTrampolineMaximumCodeSize + MAX_INSN_SIZE;
+
+        m_hook_type = ABSOLUTE_JMP;
+      } else {
+        LOG(ERROR)<<"Cannot do hook on:"<<m_target.name<<
+          " with a function body("<<m_target.size<<") which is less than:"
+          <<kHookMaximumSize<<".We cannot put a abosolute jump hook code "
+          "ahead of this function!";
+        return false;
+      }
+    } else {
+      // We need one more trampoline code size for us to JUMP out
+      detour_len = m_target.size + kTrampolineMaximumCodeSize*2;
+
+      // We need an extra trampoline jump buffer for holding the jump
+      remote_len = kHookableSize + MAX_INSN_SIZE +
+        kTrampolineMaximumCodeSize*2;
+
+      // Double jump
+      m_hook_type = DOUBLE_JUMP;
+    }
+  } else {
+    detour_len = m_target.size + kTrampolineMaximumCodeSize;
+    remote_len = kHookMaximumSize +
+      kTrampolineMaximumCodeSize + MAX_INSN_SIZE;
+    // Relative jump
+    m_hook_type = RELATIVE_JUMP;
+  }
+
+  // Allocate remote memory
+  m_detour_buffer_addr = m_alloc->allocate(remote_len,m_target.base);
+
+  if(m_detour_buffer_addr == 0) {
+    LOG(ERROR)<<"Cannot allocate remote memory!";
+    return false;
+  }
+
+  // Allocate OOL/detour buffer
+  m_detour_buffer.reset(new char[detour_len]);
+
+  return true;
+}
+
+} // namespace
+
+// ==============================
+// Patch Manager
+// ==============================
+patch* patch_manager::create_patch( remote_allocator* alloc ,
+    const process_info& pinfo ,
+    const std::string& hook_func ,
+    uintptr_t new_func ) {
+  // Check if we already get this symbol before
+  if(m_patch_list.find(hook_func) != m_patch_list.end()) {
+    LOG(ERROR)<<"Try to hook an existed hook:"<<hook_func<<"!";
+    return NULL;
+  }
+  const process_info::symbol_info* sinfo = pinfo.find_symbol(
+      hook_func);
+  if(sinfo) {
+    if(sinfo->size >= inline_hook_patch::kHookableSize) {
+      std::auto_ptr<patch> p(new inline_hook_patch(pinfo,
+            *sinfo,new_func,alloc));
+      if(p->precheck_hook()) {
+        m_patch_list.insert(hook_func);
+        return p.release();
+      } else {
+        return NULL;
+      }
+    } else {
+      LOG(ERROR)<<"Cannot hook this function:"<<sinfo->name<<" because"
+        " the function is too short with size:"<<sinfo->size<<".A function "
+        "has more than:"<<inline_hook_patch::kHookableSize
+        <<" *may* be hooked!";
+      return NULL;
+    }
+  } else {
+    LOG(ERROR)<<"Cannot find symbol:"<<hook_func<<" for patching!";
+  }
+  return NULL;
+}
+
+} // namespace dynhook

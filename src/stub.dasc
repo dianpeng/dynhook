@@ -1,0 +1,697 @@
+#include "base.h"
+#include "stub.h"
+#include "process_info.h"
+#include "ptrace_util.h"
+
+namespace {
+
+// Avoid ODR
+#include "../dynasm/dasm_proto.h"
+#include "../dynasm/dasm_x86.h"
+
+} // namespace
+
+#include <glog/logging.h>
+
+#include <boost/foreach.hpp>
+#include <boost/static_assert.hpp>
+
+|.arch x64
+|.macro callq, arg
+  | mov64 rax, arg
+  | call rax
+|.endmacro
+|.actionlist actions
+
+namespace dynhook {
+
+|.globals LOAD_SYMBOL_GLOBALS
+static void* LOAD_SYMBOL_GLOBALS[LOAD_SYMBOL_GLOBALS_MAX];
+
+bool load_symbol::init( const process_info& proc , const std::string& so ,
+    const std::string& name ) {
+  const process_info::symbol_info* op = proc.find_symbol(
+      "__libc_dlopen_mode");
+
+  const process_info::symbol_info* sym = proc.find_symbol(
+      "__libc_dlsym");
+
+  if(!op) {
+    LOG(ERROR)<<"Cannot find __libc_dlopen_open in target process!";
+    return false;
+  }
+
+  if(!sym) {
+    LOG(ERROR)<<"Cannot find __libc_dlsym in target process!";
+    return false;
+  }
+
+  dasm_State* state;
+  dasm_init(&state,1);
+  dasm_setupglobal(&state,LOAD_SYMBOL_GLOBALS,LOAD_SYMBOL_GLOBALS_MAX);
+  dasm_setup(&state,actions);
+
+  m_so = so;
+  m_hook = name;
+
+#define Dst (&state)
+
+  // Generate STRING data right before the code body.
+  // Later one user uses R8 + OFFSET to reference the
+  // string inside of the code body. When the code is
+  // injected, we will set the R8 to where we inject
+  // the freaking code.
+  //
+  // NOTES: the following code purposely leak the return
+  // value from dlopen since it is OK to leak it I guess
+  // which save me time to generate another load_symbol to CLEAN
+  // that freaking return handler later on.
+  |->start:
+  BOOST_FOREACH(char ch, so) {
+    char c = ch; // Make dynasm happy
+    |.byte c
+  }
+  |.byte 0x0
+
+  BOOST_FOREACH(char ch, name) {
+    char c = ch; // Make dynasm happy
+    |.byte c
+  }
+  |.byte 0x0
+
+  | nop
+  | nop
+
+  // First argument
+  | lea rdi,[->start]
+
+  // Second argument, flags == 2
+  | mov esi, 2
+
+  // Call the dlopen
+  | callq op->base
+
+  // Check the return value
+  | test rax,rax
+  | jnz >1
+
+  // Exit from the tracee process , and give back control to tracer
+  // because we cannot load that freaking so object
+  | mov rax,1
+
+  | int 3
+
+  // OK, we load the target so objects, now load the symbol
+  // in the so
+  |1:
+
+  // Handler
+  | mov rdi,rax
+
+  // Symbol Name
+  //
+  // This is really just workaround, we can have rip +/- offset as
+  // target in lea instruction but I don't know how to get DynAsm
+  // understand it and assemble it. Anyway, this performance penalty
+  // is not a problem here
+  | lea rsi,[->start]
+  | add rsi,so.size()+1
+
+  // Call the dlsym
+  | callq sym->base
+
+  // Don't need to check whether RAX contains our freaking handler
+  // the tracer will take care
+  //
+  // TRAP return
+  | int 3
+
+#undef Dst
+
+  int status = dasm_link(&state,&m_code_size);
+  if(status != DASM_S_OK) {
+    LOG(ERROR)<<"Cannot link generated code!";
+    goto fail;
+  }
+
+  m_code.reset( new char[m_code_size] );
+
+  dasm_encode(&state,m_code.get());
+  dasm_free(&state);
+
+  m_data_size = so.size() + name.size() + 2;
+
+  LOG(INFO)<<"load symbol code generation finished!";
+  return true;
+
+fail:
+  dasm_free(&state);
+  return false;
+}
+
+void load_symbol::dump( std::ostream& output ) {
+  output<<"load_symbol\n";
+  output<<"==================================\n";
+  output<<m_code.get()<<"\n";
+  output<<m_code.get() + m_so.size()+1<<"\n";
+  output<<"==================================\n";
+  base::dump_assembly(m_code.get()+m_data_size,
+        m_code_size-m_data_size,output);
+}
+
+
+// =======================================
+// Allocate executable memory stub
+// =======================================
+|.globals MEM_MAP_GLOBALS
+static void* MEM_MAP_GLOBALS[MEM_MAP_GLOBALS_MAX];
+
+bool mem_map::init( const process_info& info , size_t size ,
+    uintptr_t addr , int flag ) {
+  // Resolve symbols
+  const process_info::symbol_info* mm = info.find_symbol("mmap");
+  if(!mm) {
+    LOG(ERROR)<<"Cannot resolve symbol mmap in target process!";
+    return false;
+  }
+
+  dasm_State* state;
+  dasm_init(&state,1);
+  dasm_setupglobal(&state,MEM_MAP_GLOBALS,MEM_MAP_GLOBALS_MAX);
+  dasm_setup(&state,actions);
+  m_alloc_size = size;
+  m_flag = flag;
+  m_addr = addr;
+
+#define Dst (&state)
+  | nop
+  | nop
+
+  // Prolog
+  // Call mmap
+  // PROT_READ | PROT_WRITE | PROT_EXEC == 7
+  // MAP_ANON | MAP_PRIVATE == 34
+  | mov rdi, addr
+  | mov rsi, size
+  | mov rdx, 7
+  | mov rcx, flag
+  | mov r8 , -1
+  | mov r9 , 0
+  | callq mm->base
+
+  // Return
+  | int 3
+
+#undef Dst
+
+  int status = dasm_link(&state,&m_code_size);
+  if(status != DASM_S_OK) {
+    LOG(ERROR)<<"Cannot link generated code!";
+    goto fail;
+  }
+
+  m_code.reset( new char[m_code_size] );
+
+  dasm_encode(&state,m_code.get());
+  dasm_free(&state);
+
+  LOG(INFO)<<"mem_map code generation finished!";
+  return true;
+
+fail:
+  dasm_free(&state);
+  return false;
+}
+
+
+void mem_map::dump( std::ostream& output ) {
+  output<<"mem_map\n";
+  base::dump_assembly(m_code.get(),m_code_size,output);
+}
+
+|.globals MEM_UNMAP_GLOBALS
+static void* MEM_UNMAP_GLOBALS[MEM_MAP_GLOBALS_MAX];
+
+bool mem_unmap::init( const process_info& info ,
+    uintptr_t addr , size_t len ) {
+  const process_info::symbol_info* um =
+    info.find_symbol("munmap");
+  if(!um) {
+    LOG(ERROR)<<"Cannot find munmap in target process!";
+    return false;
+  }
+
+  dasm_State* state;
+  dasm_init(&state,1);
+  dasm_setupglobal(&state,MEM_MAP_GLOBALS,
+      MEM_MAP_GLOBALS_MAX);
+  dasm_setup(&state,actions);
+
+  m_addr = addr; m_size = len;
+
+#define Dst (&state)
+
+  |->start:
+  | mov rdi , addr
+  | mov rsi , len
+  | callq um->base
+  | int 3
+
+#undef Dst
+
+  int status = dasm_link(&state,&m_code_size);
+  if(status != DASM_S_OK) {
+    LOG(ERROR)<<"Cannot link generated code!";
+    goto fail;
+  }
+
+  m_code.reset( new char[m_code_size] );
+
+  dasm_encode(&state,m_code.get());
+  dasm_free(&state);
+
+  LOG(INFO)<<"set_patched_fun code generation finished!";
+  return true;
+
+fail:
+  dasm_free(&state);
+  return false;
+}
+
+void mem_unmap::dump( std::ostream& output ) {
+  base::dump_assembly( m_code.get() , m_code_size , output );
+}
+
+|.globals SET_PATCHED_FUNC_GLOBALS
+static void* SET_PATCHED_FUNC_GLOBALS[SET_PATCHED_FUNC_GLOBALS_MAX];
+
+bool set_patched_func::init( const process_info& info ,
+    const std::string& so,
+    const std::string& func ) {
+  const process_info::symbol_info* op =
+    info.find_symbol("__libc_dlopen_mode");
+  if(!op) {
+    LOG(ERROR)<<"Cannot find __libc_dlopen_mode in target process!";
+    return false;
+  }
+
+  const process_info::symbol_info* sym =
+    info.find_symbol("__libc_dlsym");
+  if(!sym) {
+    LOG(ERROR)<<"Cannot find __libc_dlsym in target process!";
+    return false;
+  }
+
+  dasm_State* state;
+  dasm_init(&state,1);
+  dasm_setupglobal(&state,SET_PATCHED_FUNC_GLOBALS,
+      SET_PATCHED_FUNC_GLOBALS_MAX);
+  dasm_setup(&state,actions);
+
+  m_so_name = so;
+  m_func_name = func;
+
+#define Dst (&state)
+
+  |->start:
+
+  BOOST_FOREACH(char ch, so) {
+    char c = ch; // Make dynasm happy
+    |.byte c
+  }
+  |.byte 0x0
+
+  BOOST_FOREACH(char ch, func) {
+    char c = ch; // Make dynasm happy
+    |.byte c
+  }
+  |.byte 0x0
+
+  | nop
+  | nop
+
+
+  | lea rdi,[->start]
+  // Second argument, flags == 2
+  | mov esi, 2
+
+  // Call the dlopen
+  | push r9
+  | push r8
+  | callq op->base
+  | pop r8
+  | pop r9
+
+  // Check the return value
+  | test rax,rax
+  | jnz >1
+
+  // Return
+  | int 3
+
+  // OK, we load the target so objects, now load the symbol
+  // in the so
+  |1:
+
+  // Handler
+  | mov rdi,rax
+
+  // Symbol Nameptrace
+  | lea rsi,[->start]
+  | add rsi,so.size()+1
+
+  | push r8
+  | push r9
+  // Call the dlsym
+  | callq sym->base
+  | pop r9
+  | pop r8
+
+  // Test whether it is a null pointer
+  | test rax, rax
+  | jnz >2
+
+  | mov rax,2
+
+  | int 3
+
+  |2:
+
+  // Call user's setter function to let user get the *PATCHED*
+  // old function's start point , otherwise user will have a
+  // triggered dead loop
+  | mov rdi, r9
+  | call rax
+
+  // Succeded , make rax 0 to the tracer
+  | xor rax,rax
+
+  | int 3
+
+#undef Dst
+
+  int status = dasm_link(&state,&m_code_size);
+  if(status != DASM_S_OK) {
+    LOG(ERROR)<<"Cannot link generated code!";
+    goto fail;
+  }
+
+  m_code.reset( new char[m_code_size] );
+
+  dasm_encode(&state,m_code.get());
+  dasm_free(&state);
+
+  m_data_size = so.size() + func.size() + 2;
+
+  LOG(INFO)<<"set_patched_fun code generation finished!";
+  return true;
+
+fail:
+  dasm_free(&state);
+  return false;
+}
+
+void set_patched_func::dump( std::ostream& output ) {
+  output<<"set_patched_func\n";
+  output<<"==================================\n";
+  output<<m_code.get()<<"\n";
+  output<<m_code.get() + m_so_name.size()+1<<"\n";
+  output<<"==================================\n";
+  base::dump_assembly(m_code.get()+m_data_size,
+        m_code_size-m_data_size,output);
+}
+
+namespace {
+
+// A RAII class that is used to help copy and recover target process's modified
+// memory. In its destructor it will *COPY* the code to the target process's
+// specific chunk of memory , in its dtor it will recover the target process's
+// memory
+//
+//
+// The RAII is kind of wired since the constructor really does nothing since
+// it can fail. User needs to call the init to do the job. But once the init
+// do the correct job, then destructor will try to destroy them properly. In
+// the destructor, we can fail as well due to the ptrace call. But mostly we
+// are safe because of reason like the target process is died.
+class code_copy {
+ public:
+  bool init() {
+    BOOST_STATIC_ASSERT(kWordSize == sizeof(uintptr_t));
+
+    const size_t len = m_code.size(); // Size of the code that needs to be replaced
+    const size_t loops = (len / kWordSize) + 1; // We peek this much of memory
+
+    // Using ptrace to grab *ALL* the required data from the target process
+    m_backup_code.reset( new uintptr_t[loops] );
+
+    // Using ptrace to peek all the data out in the current process
+    // Here ptrace can fail and we have no way to tell the caller that
+    // we failed at ptrace without using exceptions , FUCK
+    LOG(INFO)<<"Try to peek the target process :"<<m_pid
+      <<" from address: "<<m_segment.start<<" until "
+      <<loops*kWordSize <<"!";
+
+    for( size_t i = 0 ; i < loops ; ++i ) {
+      uintptr_t data;
+      if(!ptrace_peek(m_pid,m_segment.start+i*kWordSize,&data))
+        return false;
+      m_backup_code.get()[i] = data;
+    }
+
+    LOG(INFO)<<"Finish peek the target process :"<<m_pid<<"!";
+
+    // Now try to poke the data to the target process
+    size_t word_len = len / kWordSize;
+    size_t trailer = len - word_len *  kWordSize;
+
+    for( size_t i = 0 ; i < len ; i += kWordSize ) {
+      if(!ptrace_poke(m_pid,m_segment.start+i,
+          *reinterpret_cast<uintptr_t*>(static_cast<char*>(
+              m_code.code())+i)))
+        return false;
+      ++m_poked_size;
+    }
+
+    // Finish the trailer parts
+    {
+      uintptr_t buf = 0;
+      assert(trailer < kWordSize);
+      if(!trailer) {
+        memcpy(&buf,static_cast<char*>(m_code.code())
+            +word_len*kWordSize,trailer);
+        if(!ptrace_poke(m_pid,m_segment.start+word_len*kWordSize,buf))
+          return false;
+        ++m_poked_size;
+      }
+    }
+
+    LOG(INFO)<<"Finish poke the target process :"<<m_pid<<"!";
+
+    return true;
+  }
+
+  // Recovery inside of the destructor
+  ~code_copy() {
+    for( size_t i = 0 ; i < m_poked_size; ++i ) {
+      if(!ptrace_poke(m_pid,m_segment.start+i*kWordSize,
+            m_backup_code.get()[i]))
+        return;
+    }
+    LOG(INFO)<<"Finish recovery the poked process: "<<m_pid
+      <<" memory address spaces!";
+  }
+
+  code_copy( pid_t pid ,
+      const process_info::module_info& segment,
+      const stub& code ):
+    m_pid(pid),
+    m_segment(segment),
+    m_code(code),
+    m_backup_code(),
+    m_poked_size(0)
+  { assert(m_segment.end-m_segment.start >= m_code.size()); }
+
+ private:
+  // PID of the target process
+  pid_t m_pid;
+
+  // Which segment my target code will go to
+  const process_info::module_info& m_segment;
+
+  // Code needs to be patched
+  const stub& m_code;
+
+  // Buffer to store the backup code in the remote process
+  boost::scoped_array<uintptr_t> m_backup_code;
+
+  // Length of the code that *HAS BEEN* modified in the remote process
+  // This conut is in machine word not byte
+  size_t m_poked_size;
+};
+
+// This function will try to figure out a correct place for injection.
+// The place is currently static to the program itself , which means
+// the entry of the program. We definitly cannot inject libc/libstdc++
+// since the stub code relies on them actually.
+const process_info::module_info* find_injectable_segment(
+    const process_info& info ) {
+  const process_info::module_list& mlist = info.modules();
+  for( process_info::module_list::const_iterator itr =
+      info.modules().begin() ; itr != info.modules().end() ; ++itr ) {
+    const process_info::module_info& minfo = *itr;
+    if(minfo.path == info.path()) {
+      return &minfo;
+    }
+  }
+  return NULL;
+}
+
+// RAII class for set the register
+class register_setter {
+ public:
+   // We only need to support setting R8,R9,RIP and RAX registers
+  enum {
+    R8,
+    R9,
+    RIP,
+    RAX
+  };
+
+  bool init() {
+    errno = 0;;
+    if(!ptrace_getregs(m_pid,&m_old_regs))
+      return false;
+    m_new_regs = m_old_regs; // Copy to the new regs
+    return true;
+  }
+
+  void set( int reg , uintptr_t val ) {
+    switch(reg) {
+      case R8:
+        m_new_regs.r8 = val;
+        break;
+      case R9:
+        m_new_regs.r9 = val;
+        break;
+      case RIP:
+        m_new_regs.rip = val;
+        break;
+      case RAX:
+        m_new_regs.rax = val;
+        break;
+      default:
+        assert(0);
+        break;
+    }
+  }
+
+  bool perform() {
+    if(!ptrace_setregs(m_pid,m_new_regs))
+      return false;
+    m_modify = true;
+    return true;
+  }
+
+  ~register_setter() {
+    if(m_modify) {
+      if(!ptrace_setregs(m_pid,m_old_regs))
+        return;
+    }
+  }
+
+  register_setter(pid_t pid):
+    m_pid(pid),
+    m_old_regs(),
+    m_new_regs(),
+    m_modify(false)
+  {}
+
+  const struct user_regs_struct& old_regs() const {
+    return m_old_regs;
+  }
+
+  const struct user_regs_struct& new_regs() const {
+    return m_new_regs;
+  }
+
+ private:
+  pid_t m_pid;
+  struct user_regs_struct m_old_regs;
+  struct user_regs_struct m_new_regs;
+  bool m_modify;
+};
+
+} // namespace
+
+bool invoke( process_info* pinfo , const stub& code ,
+    uintptr_t r9 , uintptr_t* ret ) {
+  const process_info::module_info* minfo = find_injectable_segment(
+      *pinfo);
+  if(!minfo) {
+    LOG(ERROR)<<"Cannot find a correct segment for code injection!";
+    return false;
+  }
+
+  // 1. Copy the code that user wants to invoke to the remote process
+  code_copy cc(pinfo->pid(),*minfo,code);
+  if(!cc.init()) return false;
+
+  // 2. Set up the registers for doing the job
+  register_setter rset(pinfo->pid());
+  if(!rset.init()) return false;
+
+  // Set the RIP
+  rset.set( register_setter::RIP , minfo->start + code.rip_offset() + 2 );
+
+  // Set the R8
+  rset.set( register_setter::R8 , minfo->start );
+
+  // Set the R9
+  rset.set( register_setter::R9 , r9 );
+
+  if(!rset.perform())
+    return false;
+
+  // 3. Continue the target process
+  {
+    int status;
+    if(!pinfo->resume_and_wait(pinfo->pid(),&status))
+      return false;
+    // Check what kind of events/signal got from that thread/process
+    if(!WIFSTOPPED(status)) {
+      // Fucked up here, unexpected signal and child process events
+      // TODO:: Add more detail logging
+      LOG(ERROR)<<"Process:"<<pinfo->pid()<<" exit unexpected ,we are in the"
+        " middle of executing our remote hook functions !";
+      return false;
+    }
+
+    int sig = WSTOPSIG(status);
+    if(sig != SIGTRAP) {
+      // TODO:: Add more detail logging
+      LOG(ERROR)<<"We wait for the process:"<<pinfo->pid()
+        <<" to stop but not for a trap signal , signal:"<<sig;
+
+      // For debugging purpose we fowrad it
+      ptrace_signal(pinfo->pid(),sig);
+      LOG(ERROR)<<"We forward the signal:"<<sig
+        <<" to the process:"<<pinfo->pid();
+      return false;
+    }
+  }
+
+  // 4. Get the return value
+  {
+    struct user_regs_struct creg;
+    if(!ptrace_getregs(pinfo->pid(),&creg))
+      return false;
+    // Set the return value
+    *ret = creg.rax;
+  }
+
+  // RAII guarantees us to recover the old register status
+  return true;
+}
+
+} // namespace dynhook
