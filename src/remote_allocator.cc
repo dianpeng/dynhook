@@ -10,10 +10,11 @@
 
 namespace dynhook {
 
+static const size_t kPageSize = 4096;
 
 class remote_allocator::pool {
  public:
-  static const size_t kDefaultCapacity = 1024;
+  static const size_t kDefaultCapacity = kPageSize;
   static const uintptr_t kLowHint = 0x400000;
   static const uintptr_t kHighHint= 0x7f0000000000U;
 

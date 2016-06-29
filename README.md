@@ -35,7 +35,7 @@ User can press any key to quit the dynhook process, once user quit the process t
 5. A function's first few instruction has jcc family instructions cannot be hooked.
 6. A function's first few instruction has jump but not compiled with -fPIC cannot be hooked.
 7. A function has instruction that jumps back to the first few bytes of function cannot be hooked.
-8. There will be have minor memory leak in the target running process after hooking. Each 50 function hooks will leak 2KB. In most case, you will just have 2KB leak.
+8. There will be have minor memory leak in the target running process after hooking. Each function hooked will occupied at most around 40 bytes, but we will have to allocate 2 pages even user want to hook one functions. So in most cases, user will have 8KB leak every time you invoke the dynhook. Dynhook simply doesn't unmap those mapped memory due to it is too hard to figure out a correct time to unmap it. ( It's doable, but too slow and complicated )
 9. The shared object will be mapped until the target process quit. This won't cause any issue in X64 since we have 64 bit address spaces.
 10. Current implementation , *IN THEORY* ,may have corner case which will cause process hang. This will be resolved in future ,but it is highly unlikely user will catch it.
 
