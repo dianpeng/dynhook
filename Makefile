@@ -2,7 +2,7 @@ LUA=luajit
 AWK=awk
 GPP=g++
 GCC=gcc
-FLAGS:=-O2
+FLAGS:=-O3
 SRC = $(wildcard src/*.cc)
 HDR = $(wildcard src/*h)
 OBJ = ${SRC:.cc=.o}
@@ -32,10 +32,14 @@ libinstr: $(INSTR_SRC) $(INSTR_HDR) libinstruction_inat
 	ar rcs $(OBJ_FOLDER)/libinstr.a $(OBJ_FOLDER)/insn.o $(OBJ_FOLDER)/inat.o
 
 dynhook: libinstr $(SRC) $(HDR) preprocess
-	$(GPP) $(SRC) -o $(OBJ_FOLDER)/dynhook -L./bin/ -linstr $(LINK)
+	$(foreach FILE,$(SRC),$(GPP) -c $(FILE) -o $(FILE:.cc=.o) $(FLAGS);)
+	$(GPP) -c src/stub.pp.cc -o src/stub.pp.o $(FLAGS)
+	$(GPP) -c src/patch.pp.cc -o src/patch.pp.o $(FLAGS)
+	$(GPP) $(OBJ) src/stub.pp.o src/patch.pp.o -L./bin/ -linstr $(LINK) -o $(OBJ_FOLDER)/dynhook $(FLAGS)
+	mv src/*.o bin/
 
 program:
-	$(GPP) -fPIC -O2 ./program.cc -g3 -o $(OBJ_FOLDER)/program -ldl
+	$(GPP) -fPIC -O2 ./program.cc -g3 -o $(OBJ_FOLDER)/program
 
 testso:
 	$(GPP) -fPIC -shared -g3 -o $(OBJ_FOLDER)/libtestso.so -fPIC ./test-so.cc
@@ -44,3 +48,4 @@ testso:
 
 clean:
 	rm -rf bin/
+	rm -rf src/*.pp.cc

@@ -28,87 +28,74 @@
 #  - (F2): the last prefix is 0xF2
 #  - (!F3) : the last prefix is not 0xF3 (including non-last prefix case)
 #  - (66&F2): Both 0x66 and 0xF2 prefixes are specified.
-#
-# Type of Memory Access
-# Some of the instructions that can access memory, may be marked with 
-# "Mem: (R|W|RW)". 
-#   "R"  - the instruction can read data from memory, 
-#   "W"  - the instruction can write data to memory,
-#   "RW" - the instruction can both read data from memory and write data 
-#          to memory.
-# Note that analysis of other parts of an instruction may be necessary 
-# to determine if it actually reads from or writes to memory. For example,
-# one may need to check that ModRM.Mod field is not 3 (if it is, the data
-# are expected to be in a register rather than in memory).
-#######################################################################
 
 Table: one byte opcode
 Referrer:
 AVXcode:
 # 0x00 - 0x0f
-00: ADD Eb,Gb           Mem: RW
-01: ADD Ev,Gv           Mem: RW
-02: ADD Gb,Eb           Mem: R
-03: ADD Gv,Ev           Mem: R
+00: ADD Eb,Gb
+01: ADD Ev,Gv
+02: ADD Gb,Eb
+03: ADD Gv,Ev
 04: ADD AL,Ib
 05: ADD rAX,Iz
 06: PUSH ES (i64)
 07: POP ES (i64)
-08: OR Eb,Gb            Mem: RW
-09: OR Ev,Gv            Mem: RW
-0a: OR Gb,Eb            Mem: R
-0b: OR Gv,Ev            Mem: R
+08: OR Eb,Gb
+09: OR Ev,Gv
+0a: OR Gb,Eb
+0b: OR Gv,Ev
 0c: OR AL,Ib
 0d: OR rAX,Iz
 0e: PUSH CS (i64)
 0f: escape # 2-byte escape
 # 0x10 - 0x1f
-10: ADC Eb,Gb           Mem: RW
-11: ADC Ev,Gv           Mem: RW
-12: ADC Gb,Eb           Mem: R
-13: ADC Gv,Ev           Mem: R
+10: ADC Eb,Gb
+11: ADC Ev,Gv
+12: ADC Gb,Eb
+13: ADC Gv,Ev
 14: ADC AL,Ib
 15: ADC rAX,Iz
 16: PUSH SS (i64)
 17: POP SS (i64)
-18: SBB Eb,Gb           Mem: RW
-19: SBB Ev,Gv           Mem: RW
-1a: SBB Gb,Eb           Mem: R
-1b: SBB Gv,Ev           Mem: R
+18: SBB Eb,Gb
+19: SBB Ev,Gv
+1a: SBB Gb,Eb
+1b: SBB Gv,Ev
 1c: SBB AL,Ib
 1d: SBB rAX,Iz
 1e: PUSH DS (i64)
 1f: POP DS (i64)
 # 0x20 - 0x2f
-20: AND Eb,Gb           Mem: RW
-21: AND Ev,Gv           Mem: RW
-22: AND Gb,Eb           Mem: R
-23: AND Gv,Ev           Mem: R
+20: AND Eb,Gb
+21: AND Ev,Gv
+22: AND Gb,Eb
+23: AND Gv,Ev
 24: AND AL,Ib
 25: AND rAx,Iz
 26: SEG=ES (Prefix)
 27: DAA (i64)
-28: SUB Eb,Gb           Mem: RW
-29: SUB Ev,Gv           Mem: RW
-2a: SUB Gb,Eb           Mem: R
-2b: SUB Gv,Ev           Mem: R
+28: SUB Eb,Gb
+29: SUB Ev,Gv
+2a: SUB Gb,Eb
+2b: SUB Gv,Ev
 2c: SUB AL,Ib
 2d: SUB rAX,Iz
 2e: SEG=CS (Prefix)
 2f: DAS (i64)
 # 0x30 - 0x3f
-30: XOR Eb,Gb           Mem: RW
-31: XOR Ev,Gv           Mem: RW
-32: XOR Gb,Eb           Mem: R
-33: XOR Gv,Ev           Mem: R
+30: XOR Eb,Gb
+31: XOR Ev,Gv
+32: XOR Gb,Eb
+33: XOR Gv,Ev
 34: XOR AL,Ib
 35: XOR rAX,Iz
 36: SEG=SS (Prefix)
 37: AAA (i64)
-38: CMP Eb,Gb           Mem: R
-39: CMP Ev,Gv           Mem: R
-3a: CMP Gb,Eb           Mem: R
-3b: CMP Gv,Ev           Mem: R
+38: CMP Eb,Gb
+39: CMP Ev,Gv
+3a: CMP Gb,Eb
+3b: CMP Gv,Ev
 3c: CMP AL,Ib
 3d: CMP rAX,Iz
 3e: SEG=DS (Prefix)
@@ -150,20 +137,20 @@ AVXcode:
 # 0x60 - 0x6f
 60: PUSHA/PUSHAD (i64)
 61: POPA/POPAD (i64)
-62: BOUND Gv,Ma (i64)    Mem: R
-63: ARPL Ew,Gw (i64) | MOVSXD Gv,Ev (o64) Mem: R
+62: BOUND Gv,Ma (i64)
+63: ARPL Ew,Gw (i64) | MOVSXD Gv,Ev (o64)
 64: SEG=FS (Prefix)
 65: SEG=GS (Prefix)
 66: Operand-Size (Prefix)
 67: Address-Size (Prefix)
 68: PUSH Iz (d64)
-69: IMUL Gv,Ev,Iz    Mem: R
+69: IMUL Gv,Ev,Iz
 6a: PUSH Ib (d64)
-6b: IMUL Gv,Ev,Ib    Mem: R
-6c: INS/INSB Yb,DX       Mem: W
-6d: INS/INSW/INSD Yz,DX  Mem: W
-6e: OUTS/OUTSB DX,Xb     Mem: R
-6f: OUTS/OUTSW/OUTSD DX,Xz     Mem: R
+6b: IMUL Gv,Ev,Ib
+6c: INS/INSB Yb,DX
+6d: INS/INSW/INSD Yz,DX
+6e: OUTS/OUTSB DX,Xb
+6f: OUTS/OUTSW/OUTSD DX,Xz
 # 0x70 - 0x7f
 70: JO Jb
 71: JNO Jb
@@ -182,24 +169,22 @@ AVXcode:
 7e: JLE/JNG Jb
 7f: JNLE/JG Jb
 # 0x80 - 0x8f
-# The memory access types are different for the members of Grp1, they are
-# set for each member in the corresponding table below rather than here.
 80: Grp1 Eb,Ib (1A)
 81: Grp1 Ev,Iz (1A)
 82: Grp1 Eb,Ib (1A),(i64)
 83: Grp1 Ev,Ib (1A)
-84: TEST Eb,Gb      Mem: R
-85: TEST Ev,Gv      Mem: R
-86: XCHG Eb,Gb      Mem: RW
-87: XCHG Ev,Gv      Mem: RW
-88: MOV Eb,Gb       Mem: W
-89: MOV Ev,Gv       Mem: W
-8a: MOV Gb,Eb       Mem: R
-8b: MOV Gv,Ev       Mem: R
-8c: MOV Ev,Sw       Mem: W
+84: TEST Eb,Gb
+85: TEST Ev,Gv
+86: XCHG Eb,Gb
+87: XCHG Ev,Gv
+88: MOV Eb,Gb
+89: MOV Ev,Gv
+8a: MOV Gb,Eb
+8b: MOV Gv,Ev
+8c: MOV Ev,Sw
 8d: LEA Gv,M
-8e: MOV Sw,Ew       Mem: R
-8f: Grp1A (1A) | POP Ev (d64)    Mem: W
+8e: MOV Sw,Ew
+8f: Grp1A (1A) | POP Ev (d64)
 # 0x90 - 0x9f
 90: NOP | PAUSE (F3) | XCHG r8,rAX
 91: XCHG rCX/r9,rAX
@@ -218,24 +203,24 @@ AVXcode:
 9e: SAHF
 9f: LAHF
 # 0xa0 - 0xaf
-a0: MOV AL,Ob     Mem: R
-a1: MOV rAX,Ov    Mem: R
-a2: MOV Ob,AL     Mem: W
-a3: MOV Ov,rAX    Mem: W
-a4: MOVS/B Yb,Xb      Mem: RW
-a5: MOVS/W/D/Q Yv,Xv  Mem: RW
-a6: CMPS/B Xb,Yb      Mem: R
-a7: CMPS/W/D Xv,Yv    Mem: R
+a0: MOV AL,Ob
+a1: MOV rAX,Ov
+a2: MOV Ob,AL
+a3: MOV Ov,rAX
+a4: MOVS/B Yb,Xb
+a5: MOVS/W/D/Q Yv,Xv
+a6: CMPS/B Xb,Yb
+a7: CMPS/W/D Xv,Yv
 a8: TEST AL,Ib
 a9: TEST rAX,Iz
-aa: STOS/B Yb,AL       Mem: W
-ab: STOS/W/D/Q Yv,rAX  Mem: W
-ac: LODS/B AL,Xb       Mem: R
-ad: LODS/W/D/Q rAX,Xv  Mem: R
-ae: SCAS/B AL,Yb       Mem: R
+aa: STOS/B Yb,AL
+ab: STOS/W/D/Q Yv,rAX
+ac: LODS/B AL,Xb
+ad: LODS/W/D/Q rAX,Xv
+ae: SCAS/B AL,Yb
 # Note: The May 2011 Intel manual shows Xv for the second parameter of the
 # next instruction but Yv is correct
-af: SCAS/W/D/Q rAX,Yv  Mem: R
+af: SCAS/W/D/Q rAX,Yv
 # 0xb0 - 0xbf
 b0: MOV AL/R8L,Ib
 b1: MOV CL/R9L,Ib
@@ -254,16 +239,16 @@ bd: MOV rBP/r13,Iv
 be: MOV rSI/r14,Iv
 bf: MOV rDI/r15,Iv
 # 0xc0 - 0xcf
-c0: Grp2 Eb,Ib (1A)   Mem: RW
-c1: Grp2 Ev,Ib (1A)   Mem: RW
+c0: Grp2 Eb,Ib (1A)
+c1: Grp2 Ev,Ib (1A)
 c2: RETN Iw (f64)
 c3: RETN
 c4: LES Gz,Mp (i64) | VEX+2byte (Prefix)
 c5: LDS Gz,Mp (i64) | VEX+1byte (Prefix)
 c6: Grp11A Eb,Ib (1A)
 c7: Grp11B Ev,Iz (1A)
-c8: ENTER Iw,Ib    Mem: W
-c9: LEAVE (d64)    Mem: R
+c8: ENTER Iw,Ib
+c9: LEAVE (d64)
 ca: RETF Iw
 cb: RETF
 cc: INT3
@@ -271,14 +256,14 @@ cd: INT Ib
 ce: INTO (i64)
 cf: IRET/D/Q
 # 0xd0 - 0xdf
-d0: Grp2 Eb,1 (1A)    Mem: RW
-d1: Grp2 Ev,1 (1A)    Mem: RW
-d2: Grp2 Eb,CL (1A)   Mem: RW
-d3: Grp2 Ev,CL (1A)   Mem: RW
+d0: Grp2 Eb,1 (1A)
+d1: Grp2 Ev,1 (1A)
+d2: Grp2 Eb,CL (1A)
+d3: Grp2 Ev,CL (1A)
 d4: AAM Ib (i64)
 d5: AAD Ib (i64)
 d6:
-d7: XLAT/XLATB        Mem: R
+d7: XLAT/XLATB
 d8: ESC
 d9: ESC
 da: ESC
@@ -288,6 +273,9 @@ dd: ESC
 de: ESC
 df: ESC
 # 0xe0 - 0xef
+# Note: "forced64" is Intel CPU behavior: they ignore 0x66 prefix
+# in 64-bit mode. AMD CPUs accept 0x66 prefix, it causes RIP truncation
+# to 16 bits. In 32-bit mode, 0x66 is accepted by both Intel and AMD.
 e0: LOOPNE/LOOPNZ Jb (f64)
 e1: LOOPE/LOOPZ Jb (f64)
 e2: LOOP Jb (f64)
@@ -296,6 +284,10 @@ e4: IN AL,Ib
 e5: IN eAX,Ib
 e6: OUT Ib,AL
 e7: OUT Ib,eAX
+# With 0x66 prefix in 64-bit mode, for AMD CPUs immediate offset
+# in "near" jumps and calls is 16-bit. For CALL,
+# push of return address is 16-bit wide, RSP is decremented by 2
+# but is not truncated to 16 bits, unlike RIP.
 e8: CALL Jz (f64)
 e9: JMP-near Jz (f64)
 ea: JMP-far Ap (i64)
@@ -361,8 +353,12 @@ AVXcode: 1
 17: vmovhps Mq,Vq (v1) | vmovhpd Mq,Vq (66),(v1)
 18: Grp16 (1A)
 19:
-1a: BNDLDX Gv,Ev | BNDCL Ev,Gv (F3) | BNDCU Ev,Gv (F2) | BNDMOV Gv,Ev (66)
-1b: BNDSTX Ev,Gv | BNDMK Gv,Ev (F3) | BNDCN Ev,Gv (F2) | BNDMOV Ev,Gv (66)
+# Intel SDM opcode map does not list MPX instructions. For now using Gv for
+# bnd registers and Ev for everything else is OK because the instruction
+# decoder does not use the information except as an indication that there is
+# a ModR/M byte.
+1a: BNDCL Gv,Ev (F3) | BNDCU Gv,Ev (F2) | BNDMOV Gv,Ev (66) | BNDLDX Gv,Ev
+1b: BNDCN Gv,Ev (F2) | BNDMOV Ev,Gv (66) | BNDMK Gv,Ev (F3) | BNDSTX Ev,Gv
 1c:
 1d:
 1e:
@@ -402,22 +398,22 @@ AVXcode: 1
 3e:
 3f:
 # 0x0f 0x40-0x4f
-40: CMOVO Gv,Ev         Mem: R
-41: CMOVNO Gv,Ev        Mem: R
-42: CMOVB/C/NAE Gv,Ev   Mem: R
-43: CMOVAE/NB/NC Gv,Ev  Mem: R
-44: CMOVE/Z Gv,Ev       Mem: R
-45: CMOVNE/NZ Gv,Ev     Mem: R
-46: CMOVBE/NA Gv,Ev     Mem: R
-47: CMOVA/NBE Gv,Ev     Mem: R
-48: CMOVS Gv,Ev         Mem: R
-49: CMOVNS Gv,Ev        Mem: R
-4a: CMOVP/PE Gv,Ev      Mem: R
-4b: CMOVNP/PO Gv,Ev     Mem: R
-4c: CMOVL/NGE Gv,Ev     Mem: R
-4d: CMOVNL/GE Gv,Ev     Mem: R
-4e: CMOVLE/NG Gv,Ev     Mem: R
-4f: CMOVNLE/G Gv,Ev     Mem: R
+40: CMOVO Gv,Ev
+41: CMOVNO Gv,Ev
+42: CMOVB/C/NAE Gv,Ev
+43: CMOVAE/NB/NC Gv,Ev
+44: CMOVE/Z Gv,Ev
+45: CMOVNE/NZ Gv,Ev
+46: CMOVBE/NA Gv,Ev
+47: CMOVA/NBE Gv,Ev
+48: CMOVS Gv,Ev
+49: CMOVNS Gv,Ev
+4a: CMOVP/PE Gv,Ev
+4b: CMOVNP/PO Gv,Ev
+4c: CMOVL/NGE Gv,Ev
+4d: CMOVNL/GE Gv,Ev
+4e: CMOVLE/NG Gv,Ev
+4f: CMOVNLE/G Gv,Ev
 # 0x0f 0x50-0x5f
 50: vmovmskps Gy,Ups | vmovmskpd Gy,Upd (66)
 51: vsqrtps Vps,Wps | vsqrtpd Vpd,Wpd (66) | vsqrtss Vss,Hss,Wss (F3),(v1) | vsqrtsd Vsd,Hsd,Wsd (F2),(v1)
@@ -471,6 +467,7 @@ AVXcode: 1
 7e: movd/q Ey,Pd | vmovd/q Ey,Vy (66),(v1) | vmovq Vq,Wq (F3),(v1)
 7f: movq Qq,Pq | vmovdqa Wx,Vx (66) | vmovdqu Wx,Vx (F3)
 # 0x0f 0x80-0x8f
+# Note: "forced64" is Intel CPU behavior (see comment about CALL insn).
 80: JO Jz (f64)
 81: JNO Jz (f64)
 82: JB/JC/JNAE Jz (f64)
@@ -488,59 +485,59 @@ AVXcode: 1
 8e: JLE/JNG Jz (f64)
 8f: JNLE/JG Jz (f64)
 # 0x0f 0x90-0x9f
-90: SETO Eb             Mem: W
-91: SETNO Eb            Mem: W
-92: SETB/C/NAE Eb       Mem: W
-93: SETAE/NB/NC Eb      Mem: W
-94: SETE/Z Eb           Mem: W
-95: SETNE/NZ Eb         Mem: W
-96: SETBE/NA Eb         Mem: W
-97: SETA/NBE Eb         Mem: W
-98: SETS Eb             Mem: W
-99: SETNS Eb            Mem: W
-9a: SETP/PE Eb          Mem: W
-9b: SETNP/PO Eb         Mem: W
-9c: SETL/NGE Eb         Mem: W
-9d: SETNL/GE Eb         Mem: W
-9e: SETLE/NG Eb         Mem: W
-9f: SETNLE/G Eb         Mem: W
+90: SETO Eb
+91: SETNO Eb
+92: SETB/C/NAE Eb
+93: SETAE/NB/NC Eb
+94: SETE/Z Eb
+95: SETNE/NZ Eb
+96: SETBE/NA Eb
+97: SETA/NBE Eb
+98: SETS Eb
+99: SETNS Eb
+9a: SETP/PE Eb
+9b: SETNP/PO Eb
+9c: SETL/NGE Eb
+9d: SETNL/GE Eb
+9e: SETLE/NG Eb
+9f: SETNLE/G Eb
 # 0x0f 0xa0-0xaf
 a0: PUSH FS (d64)
 a1: POP FS (d64)
 a2: CPUID
-a3: BT Ev,Gv            Mem: R
-a4: SHLD Ev,Gv,Ib       Mem: RW
-a5: SHLD Ev,Gv,CL       Mem: RW
+a3: BT Ev,Gv
+a4: SHLD Ev,Gv,Ib
+a5: SHLD Ev,Gv,CL
 a6: GrpPDLK
 a7: GrpRNG
 a8: PUSH GS (d64)
 a9: POP GS (d64)
 aa: RSM
-ab: BTS Ev,Gv           Mem: RW
-ac: SHRD Ev,Gv,Ib       Mem: RW
-ad: SHRD Ev,Gv,CL       Mem: RW
+ab: BTS Ev,Gv
+ac: SHRD Ev,Gv,Ib
+ad: SHRD Ev,Gv,CL
 ae: Grp15 (1A),(1C)
-af: IMUL Gv,Ev          Mem: R
+af: IMUL Gv,Ev
 # 0x0f 0xb0-0xbf
-b0: CMPXCHG Eb,Gb       Mem: RW
-b1: CMPXCHG Ev,Gv       Mem: RW
+b0: CMPXCHG Eb,Gb
+b1: CMPXCHG Ev,Gv
 b2: LSS Gv,Mp
-b3: BTR Ev,Gv           Mem: RW
+b3: BTR Ev,Gv
 b4: LFS Gv,Mp
 b5: LGS Gv,Mp
-b6: MOVZX Gv,Eb         Mem: R
-b7: MOVZX Gv,Ew         Mem: R
-b8: JMPE (!F3) | POPCNT Gv,Ev (F3)    Mem: R
+b6: MOVZX Gv,Eb
+b7: MOVZX Gv,Ew
+b8: JMPE (!F3) | POPCNT Gv,Ev (F3)
 b9: Grp10 (1A)
 ba: Grp8 Ev,Ib (1A)
-bb: BTC Ev,Gv           Mem: RW
-bc: BSF Gv,Ev (!F3) Mem: R | TZCNT Gv,Ev (F3) Mem: R
-bd: BSR Gv,Ev (!F3) Mem: R | LZCNT Gv,Ev (F3) Mem: R
-be: MOVSX Gv,Eb         Mem: R
-bf: MOVSX Gv,Ew         Mem: R
+bb: BTC Ev,Gv
+bc: BSF Gv,Ev (!F3) | TZCNT Gv,Ev (F3)
+bd: BSR Gv,Ev (!F3) | LZCNT Gv,Ev (F3)
+be: MOVSX Gv,Eb
+bf: MOVSX Gv,Ew
 # 0x0f 0xc0-0xcf
-c0: XADD Eb,Gb          Mem: RW
-c1: XADD Ev,Gv          Mem: RW
+c0: XADD Eb,Gb
+c1: XADD Ev,Gv
 c2: vcmpps Vps,Hps,Wps,Ib | vcmppd Vpd,Hpd,Wpd,Ib (66) | vcmpss Vss,Hss,Wss,Ib (F3),(v1) | vcmpsd Vsd,Hsd,Wsd,Ib (F2),(v1)
 c3: movnti My,Gy
 c4: pinsrw Pq,Ry/Mw,Ib | vpinsrw Vdq,Hdq,Ry/Mw,Ib (66),(v1)
@@ -739,13 +736,19 @@ bd: vfnmadd231ss/d Vx,Hx,Wx (66),(v),(v1)
 be: vfnmsub231ps/d Vx,Hx,Wx (66),(v)
 bf: vfnmsub231ss/d Vx,Hx,Wx (66),(v),(v1)
 # 0x0f 0x38 0xc0-0xff
+c8: sha1nexte Vdq,Wdq
+c9: sha1msg1 Vdq,Wdq
+ca: sha1msg2 Vdq,Wdq
+cb: sha256rnds2 Vdq,Wdq
+cc: sha256msg1 Vdq,Wdq
+cd: sha256msg2 Vdq,Wdq
 db: VAESIMC Vdq,Wdq (66),(v1)
 dc: VAESENC Vdq,Hdq,Wdq (66),(v1)
 dd: VAESENCLAST Vdq,Hdq,Wdq (66),(v1)
 de: VAESDEC Vdq,Hdq,Wdq (66),(v1)
 df: VAESDECLAST Vdq,Hdq,Wdq (66),(v1)
-f0: MOVBE Gy,My  Mem: R | MOVBE Gw,Mw (66)  Mem: R | CRC32 Gd,Eb (F2)  Mem: R
-f1: MOVBE My,Gy  Mem: W | MOVBE Mw,Gw (66)  Mem: W | CRC32 Gd,Ev (F2)  Mem: R
+f0: MOVBE Gy,My | MOVBE Gw,Mw (66) | CRC32 Gd,Eb (F2) | CRC32 Gd,Eb (66&F2)
+f1: MOVBE My,Gy | MOVBE Mw,Gw (66) | CRC32 Gd,Ey (F2) | CRC32 Gd,Ew (66&F2)
 f2: ANDN Gy,By,Ey (v)
 f3: Grp17 (1A)
 f5: BZHI Gy,Ey,By (v) | PEXT Gy,By,Ey (F3),(v) | PDEP Gy,By,Ey (F2),(v)
@@ -797,23 +800,24 @@ AVXcode: 3
 61: vpcmpestri Vdq,Wdq,Ib (66),(v1)
 62: vpcmpistrm Vdq,Wdq,Ib (66),(v1)
 63: vpcmpistri Vdq,Wdq,Ib (66),(v1)
+cc: sha1rnds4 Vdq,Wdq,Ib
 df: VAESKEYGEN Vdq,Wdq,Ib (66),(v1)
 f0: RORX Gy,Ey,Ib (F2),(v)
 EndTable
 
 GrpTable: Grp1
-0: ADD    Mem: RW
-1: OR     Mem: RW
-2: ADC    Mem: RW
-3: SBB    Mem: RW
-4: AND    Mem: RW
-5: SUB    Mem: RW
-6: XOR    Mem: RW
-7: CMP    Mem: R
+0: ADD
+1: OR
+2: ADC
+3: SBB
+4: AND
+5: SUB
+6: XOR
+7: CMP
 EndTable
 
 GrpTable: Grp1A
-0: POP    Mem: W
+0: POP
 EndTable
 
 GrpTable: Grp2
@@ -828,40 +832,41 @@ GrpTable: Grp2
 EndTable
 
 GrpTable: Grp3_1
-0: TEST Eb,Ib   Mem: R
+0: TEST Eb,Ib
 1:
-2: NOT Eb       Mem: RW
-3: NEG Eb       Mem: RW
-4: MUL AL,Eb    Mem: R
-5: IMUL AL,Eb   Mem: R
-6: DIV AL,Eb    Mem: R
-7: IDIV AL,Eb   Mem: R
+2: NOT Eb
+3: NEG Eb
+4: MUL AL,Eb
+5: IMUL AL,Eb
+6: DIV AL,Eb
+7: IDIV AL,Eb
 EndTable
 
 GrpTable: Grp3_2
-0: TEST Ev,Iz    Mem: R
+0: TEST Ev,Iz
 1:
-2: NOT Ev        Mem: RW
-3: NEG Ev        Mem: RW
-4: MUL rAX,Ev    Mem: R
-5: IMUL rAX,Ev   Mem: R
-6: DIV rAX,Ev    Mem: R
-7: IDIV rAX,Ev   Mem: R
+2: NOT Ev
+3: NEG Ev
+4: MUL rAX,Ev
+5: IMUL rAX,Ev
+6: DIV rAX,Ev
+7: IDIV rAX,Ev
 EndTable
 
 GrpTable: Grp4
-0: INC Eb       Mem: RW
-1: DEC Eb       Mem: RW
+0: INC Eb
+1: DEC Eb
 EndTable
 
 GrpTable: Grp5
-0: INC Ev         Mem: RW
-1: DEC Ev         Mem: RW
-2: CALLN Ev (f64) Mem: R
+0: INC Ev
+1: DEC Ev
+# Note: "forced64" is Intel CPU behavior (see comment about CALL insn).
+2: CALLN Ev (f64)
 3: CALLF Ep
-4: JMPN Ev (f64)  Mem: R
+4: JMPN Ev (f64)
 5: JMPF Mp
-6: PUSH Ev (d64)  Mem: R
+6: PUSH Ev (d64)
 7:
 EndTable
 
@@ -880,20 +885,23 @@ GrpTable: Grp7
 2: LGDT Ms | XGETBV (000),(11B) | XSETBV (001),(11B) | VMFUNC (100),(11B) | XEND (101)(11B) | XTEST (110)(11B)
 3: LIDT Ms
 4: SMSW Mw/Rv
-5:
+5: rdpkru (110),(11B) | wrpkru (111),(11B)
 6: LMSW Ew
 7: INVLPG Mb | SWAPGS (o64),(000),(11B) | RDTSCP (001),(11B)
 EndTable
 
 GrpTable: Grp8
-4: BT       Mem: R
-5: BTS      Mem: RW
-6: BTR      Mem: RW
-7: BTC      Mem: RW
+4: BT
+5: BTS
+6: BTR
+7: BTC
 EndTable
 
 GrpTable: Grp9
-1: CMPXCHG8B/16B Mq/Mdq   Mem: RW
+1: CMPXCHG8B/16B Mq/Mdq
+3: xrstors
+4: xsavec
+5: xsaves
 6: VMPTRLD Mq | VMCLEAR Mq (66) | VMXON Mq (F3) | RDRAND Rv (11B)
 7: VMPTRST Mq | VMPTRST Mq (F3) | RDSEED Rv (11B)
 EndTable
@@ -903,12 +911,12 @@ EndTable
 
 # Grp11A and Grp11B are expressed as Grp11 in Intel SDM
 GrpTable: Grp11A
-0: MOV Eb,Ib    Mem: W
+0: MOV Eb,Ib
 7: XABORT Ib (000),(11B)
 EndTable
 
 GrpTable: Grp11B
-0: MOV Eb,Iz    Mem: W
+0: MOV Eb,Iz
 7: XBEGIN Jz (000),(11B)
 EndTable
 
@@ -938,8 +946,8 @@ GrpTable: Grp15
 3: vstmxcsr Md (v1) | WRGSBASE Ry (F3),(11B)
 4: XSAVE
 5: XRSTOR | lfence (11B)
-6: XSAVEOPT | mfence (11B)
-7: clflush | sfence (11B)
+6: XSAVEOPT | clwb (66) | mfence (11B)
+7: clflush | clflushopt (66) | sfence (11B) | pcommit (66),(11B)
 EndTable
 
 GrpTable: Grp16

@@ -32,6 +32,7 @@ bool parse_command( int argc , char* argv[] , po::variables_map* vm ) {
     ("hook",
      po::value< std::vector<std::string> >()->composing(),
      "Specify the hook!")
+    ("debug","Show verbose debug output!")
     ;
 
   po::store(po::parse_command_line(argc,argv,desc),*vm);
@@ -104,8 +105,12 @@ bool main( int argc , char* argv[] ) {
   std::vector<hook> hook_name_list;
   pid_t pid;
   patch_manager mgr;
+  bool debug = false;
   if(!parse_command(argc,argv,&config))
     return false;
+
+  if(config.count("debug"))
+    debug = true;
 
   // Get the pid
   try {
@@ -139,6 +144,8 @@ bool main( int argc , char* argv[] ) {
       std::cerr<<"Cannot create process_info objects, see log for detail!";
       return false;
     }
+
+    if(debug) pinfo->dump(std::cout);
 
     // Now attach all the process
     if(!pinfo->attach_all()) {
@@ -224,6 +231,12 @@ bool main( int argc , char* argv[] ) {
         return false;
       }
       ++idx;
+    }
+
+    if(debug) {
+      BOOST_FOREACH(patch& p, patch_list) {
+        p.dump(std::cout);
+      }
     }
 
     // resumse all the process and waiting for user to exit us

@@ -1,5 +1,5 @@
 *.pp.cc
 *.o
 *.a
-*.awk
+instr/inat-tables.c
 bin/
