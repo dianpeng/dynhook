@@ -250,6 +250,8 @@ bool mem_unmap::init( const process_info& info ,
   m_addr = addr; m_size = len;
 
 #define Dst (&state)
+  | nop
+  | nop
 
   |->start:
   | mov rdi , addr
