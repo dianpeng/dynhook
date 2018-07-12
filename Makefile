@@ -2,7 +2,6 @@ LUA=luajit
 AWK=awk
 GPP=g++
 GCC=gcc
-FLAGS:=-O3
 SRC = $(wildcard src/*.cc)
 HDR = $(wildcard src/*h)
 OBJ = ${SRC:.cc=.o}
@@ -39,13 +38,14 @@ dynhook: libinstr $(SRC) $(HDR) preprocess
 	mv src/*.o bin/
 
 program:
-	$(GPP) -fPIC -O2 ./program.cc -g3 -o $(OBJ_FOLDER)/program
+	$(GPP) -fPIC -O2 ./program.cc -o $(OBJ_FOLDER)/program
 
 testso:
-	$(GPP) -fPIC -shared -g3 -o $(OBJ_FOLDER)/libtestso.so -fPIC ./test-so.cc
+	$(GPP) -fPIC -O2 -shared -o $(OBJ_FOLDER)/libtestso.so -fPIC ./test-so.cc
 
 .PHONY:clean bin_folder
 
 clean:
 	rm -rf bin/
 	rm -rf src/*.pp.cc
+	rm -rf src/*.o
